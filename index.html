@@ -155,6 +155,9 @@
 </div>
 
 <script>
+const GEMINI_API_KEY = 'AIzaSyBjVQbj0VB7rpFNCCWJRnX4DL8thBj9etY';
+const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=' + GEMINI_API_KEY;
+
 let uploadedFiles = [];
 
 function getFileType(file) {
@@ -229,7 +232,7 @@ async function runAnalysis() {
   document.getElementById('errorBox').style.display = 'none';
 
   try {
-    const contentBlocks = [];
+    const parts = [];
     const fileLabels = [];
 
     for (const file of uploadedFiles) {
@@ -238,46 +241,41 @@ async function runAnalysis() {
 
       if (t === 'csv') {
         const text = await readFileAsText(file);
-        contentBlocks.push({ type: 'text', text: '--- CSV FILE: ' + file.name + ' ---\n' + text.slice(0, 8000) });
+        parts.push({ text: '--- CSV FILE: ' + file.name + ' ---\n' + text.slice(0, 8000) });
         fileLabels.push({ name: file.name, type: 'csv' });
-      } else if (t === 'pdf') {
-        const b64 = await readFileAsBase64(file);
-        contentBlocks.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } });
-        contentBlocks.push({ type: 'text', text: '(Above is the PDF statement: ' + file.name + ')' });
-        fileLabels.push({ name: file.name, type: 'pdf' });
       } else {
         const b64 = await readFileAsBase64(file);
         const mime = getMimeType(file);
-        contentBlocks.push({ type: 'image', source: { type: 'base64', media_type: mime, data: b64 } });
-        contentBlocks.push({ type: 'text', text: '(Above is a statement image: ' + file.name + ')' });
-        fileLabels.push({ name: file.name, type: 'img' });
+        parts.push({ inline_data: { mime_type: mime, data: b64 } });
+        parts.push({ text: '(Above is the statement file: ' + file.name + ')' });
+        fileLabels.push({ name: file.name, type: t });
       }
     }
 
     setLoadingStep('Categorizing transactions...');
 
-    const systemPrompt = `You are a sharp personal finance analyst. The user has shared bank and credit card statements — PDFs, images, or CSVs. Extract every transaction you can find and analyze their finances.
+    const prompt = `You are a sharp personal finance analyst. The user has shared bank and credit card statements — PDFs, images, or CSVs. Extract every transaction you can find and analyze their finances.
 
 Return ONLY a valid JSON object. No markdown, no backticks, no explanation. Just the raw JSON.
 
 JSON structure:
 {
-  "month": "April 2025",
+  "month": "March 2026",
   "currency": "₹",
   "totalIncome": 85000,
   "totalExpenses": 62000,
   "netSavings": 23000,
-  "sources": ["HDFC Bank", "ICICI Credit Card"],
+  "sources": ["HDFC Bank"],
   "categories": [
     {"name": "Food & Dining", "amount": 12000}
   ],
   "subscriptions": [
     {"name": "Netflix", "amount": 649, "frequency": "monthly", "flag": "keep", "reason": "regularly charged"},
-    {"name": "Audible", "amount": 199, "frequency": "monthly", "flag": "cancel", "reason": "no other usage visible"}
+    {"name": "Audible", "amount": 199, "frequency": "monthly", "flag": "cancel", "reason": "no usage visible"}
   ],
   "transactions": [
-    {"date": "2025-04-01", "description": "Swiggy", "amount": -450, "category": "Food & Dining"},
-    {"date": "2025-04-02", "description": "Salary", "amount": 85000, "category": "Income"}
+    {"date": "2026-03-01", "description": "Swiggy", "amount": -450, "category": "Food & Dining"},
+    {"date": "2026-03-02", "description": "Salary", "amount": 85000, "category": "Income"}
   ],
   "verdict": "2-3 sentences. Direct, honest, like a trusted friend. What is good, what is a problem, top action to take."
 }
@@ -289,26 +287,24 @@ Rules:
 - transactions: max 60 entries, most recent first, amounts as plain numbers (negative = expense, positive = income)
 - categories: max 10 categories
 - Flag subscriptions: cancel = clear waste, keep = clearly used, review = ambiguous
-- verdict: no corporate speak, be direct and real`;
+- verdict: no corporate speak, be direct and real
 
-    contentBlocks.push({ type: 'text', text: 'Analyze these statements and return the JSON.' });
+Analyze these statements and return the JSON.`;
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+    parts.push({ text: prompt });
+
+    const response = await fetch(GEMINI_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 4000,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: contentBlocks }]
-      })
+      body: JSON.stringify({ contents: [{ parts }] })
     });
 
     setLoadingStep('Building your report...');
     const data = await response.json();
+
     if (data.error) throw new Error(data.error.message);
 
-    const raw = data.content.map(b => b.text || '').join('');
+    const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
     const jsonMatch = raw.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error('Could not parse response. Try a cleaner file.');
     const result = JSON.parse(jsonMatch[0]);
